@@ -1,0 +1,86 @@
+﻿@page "/"
+
+@using Humanizer
+@using Microsoft.SqlServer.TransactSql.ScriptDom
+@using TSqlFormatServices
+
+<PageTitle>TSql Formatter</PageTitle>
+
+<div style="display: flex; gap: 2em; align-items: center; padding-bottom: 0.5em; font-size: small">
+    <button style="width: 8em" disabled="@(reformattedSqlText is null)">@(reformattedSqlText is not null ? "🧹 Format" : "✔️ Formatted")</button>
+    @if (parseErrors is not [])
+    {
+        <div>❌ @("error".ToQuantity(parseErrors.Count))</div>
+    }
+    @if (supportedProductVersionRange is var (oldest, newest))
+    {
+        <div>✔️ Syntax supported by <b>SQL Server @oldest@if (newest != oldest) { <text> – @newest</text> }</b> grammar <small>(does not detect all syntax errors or missing functions)</small></div>
+    }
+</div>
+
+<textarea value="@sqlText" @oninput="OnSqlTextInput" @onchange="Reformat" @onpaste="OnSqlTextPaste" style="width: 100%; height: 70vh; resize: vertical; box-sizing: border-box" placeholder="Enter T-SQL here..."></textarea>
+
+@foreach (var error in parseErrors)
+{
+    <div>❌ @error.Message (line @error.Line, column @error.Column)</div>
+}
+
+@code {
+    private string sqlText = "";
+    private IList<ParseError> parseErrors = [];
+    private string? reformattedSqlText;
+    private (string Oldest, string Newest)? supportedProductVersionRange;
+
+    private void OnSqlTextInput(ChangeEventArgs e)
+    {
+        sqlText = (string)e.Value!;
+        reformattedSqlText = null;
+        parseErrors = [];
+        supportedProductVersionRange = null;
+
+        if (string.IsNullOrWhiteSpace(sqlText))
+            return;
+
+        var parser = TSqlParser.CreateParser(SqlVersionUtils.SqlServerVersions.Last().SqlVersion, initialQuotedIdentifiers: true);
+
+        using var reader = new StringReader(sqlText);
+        var node = parser.Parse(reader, out var errors);
+        parseErrors = errors ?? [];
+
+        supportedProductVersionRange = TSqlUtils.GetSupportedProductRange(sqlText, newestVersionSucceeded: errors is null or []);
+
+        if (node is { ScriptTokenStream: not null })
+        {
+            var formatter = new TSqlFormatter
+            {
+                BuiltInFunctionCasing = KeywordCasing.Lowercase,
+                KeywordCasing = KeywordCasing.Lowercase,
+                IdentifierQuoting = IdentifierQuoting.OnlyWhenNecessary,
+                SemicolonUsage = SemicolonUsage.Always,
+                NormalizeConsecutiveSpaces = true,
+                UseAsKeywordForAliases = true,
+            };
+
+            using var writer = new StringWriter();
+            formatter.Format(node, writer);
+            var result = writer.ToString();
+            if (sqlText != result)
+                reformattedSqlText = result;
+        }
+    }
+
+    private void Reformat()
+    {
+        if (reformattedSqlText is null)
+            return;
+
+        sqlText = reformattedSqlText;
+        reformattedSqlText = null;
+    }
+
+    private async Task OnSqlTextPaste()
+    {
+        await Task.Yield();
+        Reformat();
+    }
+}
